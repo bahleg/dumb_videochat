@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Mini Video+Audio Chat</title>
+</head>
+
+<body>
+    <h1>Mini Video+Audio Chat</h1>
+    <video id="localVideo" autoplay muted playsinline></video>
+    <canvas id="remoteCanvas" width="640" height="480"></canvas>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
+    <script>
+        const socket = io({ secure: true });
+        const localVideo = document.getElementById('localVideo');
+        const remoteCanvas = document.getElementById('remoteCanvas');
+        const ctx = remoteCanvas.getContext('2d');
+
+        let localStream;
+
+        async function init() {
+            localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            localVideo.srcObject = localStream;
+
+            // Autoconnect
+            socket.emit('join', { username: 'Parent' });
+
+            // Video
+            const canvas = document.createElement('canvas');
+            canvas.width = 160;
+            canvas.height = 120;
+            const videoCtx = canvas.getContext('2d');
+
+            setInterval(() => {
+                videoCtx.drawImage(localVideo, 0, 0, canvas.width, canvas.height);
+                canvas.toBlob(blob => {
+                    const reader = new FileReader();
+                    reader.onload = () => {
+                        const arrayBuffer = reader.result;
+                        socket.emit('media', arrayBuffer, { binary: true });
+                    };
+                    reader.readAsArrayBuffer(blob);
+                }, 'image/jpeg', 0.3);
+            }, 100);
+
+            // Audio
+            const audioCtx = new AudioContext();
+            const source = audioCtx.createMediaStreamSource(localStream);
+            const processor = audioCtx.createScriptProcessor(4096, 1, 1);
+
+            source.connect(processor);
+            processor.connect(audioCtx.destination);
+
+            processor.onaudioprocess = (e) => {
+                const channelData = e.inputBuffer.getChannelData(0);
+                const buffer = new ArrayBuffer(channelData.length * 2);
+                const view = new DataView(buffer);
+                for (let i = 0; i < channelData.length; i++) {
+                    let s = Math.max(-1, Math.min(1, channelData[i]));
+                    view.setInt16(i * 2, s < 0 ? s * 0x7FFF : s * 0x7FFF, true);
+                }
+                socket.emit('audio', buffer, { binary: true });
+            };
+
+            // sound play
+            const playCtx = new AudioContext();
+            socket.on('audio', (data) => {
+                const buffer = new Int16Array(data);
+                const float32 = new Float32Array(buffer.length);
+                for (let i = 0; i < buffer.length; i++) float32[i] = buffer[i] / 0x7FFF;
+                const audioBuffer = playCtx.createBuffer(1, float32.length, playCtx.sampleRate);
+                audioBuffer.getChannelData(0).set(float32);
+                const src = playCtx.createBufferSource();
+                src.buffer = audioBuffer;
+                src.connect(playCtx.destination);
+                src.start();
+            });
+        }
+
+        // Video from others
+        socket.on('media', data => {
+            const blob = new Blob([data], { type: 'image/jpeg' });
+            const img = new Image();
+            img.onload = () => {
+                ctx.drawImage(img, 0, 0, remoteCanvas.width, remoteCanvas.height);
+                URL.revokeObjectURL(img.src);
+            };
+            img.src = URL.createObjectURL(blob);
+        });
+
+        init();
+    </script>
+</body>
+
+</html>
